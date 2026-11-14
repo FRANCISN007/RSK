@@ -59,10 +59,22 @@ class MembershipResponse(BaseModel):
     id: int
     user_id: int
     plan_id: int
+
+    # Include the actual membership plan
+    plan: MembershipPlanResponse
+
     start_date: datetime
     end_date: datetime
     status: str
     created_at: datetime
+
+    deactivated_at: datetime | None = None
+    deactivation_reason: str | None = None
+    deactivated_by: int | None = None
+
+    model_config = ConfigDict(
+        from_attributes=True
+    )
 
     # -----------------------------------------------------
     # DEACTIVATION INFORMATION

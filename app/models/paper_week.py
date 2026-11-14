@@ -119,3 +119,6 @@ class PaperWeek(Base):
         cascade="all, delete-orphan",
         order_by="EditionPaper.display_order",
     )
+
+
+    

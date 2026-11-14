@@ -30,17 +30,19 @@ class FreeGamePost(Base):
         index=True,
     )
 
-    season_id: Mapped[int] = mapped_column(
+    
+    season_id: Mapped[int | None] = mapped_column(
         ForeignKey("pool_seasons.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
 
-    pool_week_id: Mapped[int] = mapped_column(
+    pool_week_id: Mapped[int | None] = mapped_column(
         ForeignKey("pool_weeks.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
+
 
     title: Mapped[str] = mapped_column(
         String(200),
@@ -104,3 +106,5 @@ class FreeGamePost(Base):
         "PoolWeek",
         back_populates="free_games",
     )
+
+

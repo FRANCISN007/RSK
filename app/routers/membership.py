@@ -16,6 +16,7 @@ from app.schemas.membership import (
     MembershipResponse,
 )
 
+from sqlalchemy.orm import Session, joinedload
 
 router = APIRouter(
     prefix="/memberships",
@@ -65,31 +66,26 @@ def get_my_membership(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    now = datetime.now(timezone.utc)
+
     membership = db.scalar(
         select(Membership)
+        .options(
+            joinedload(Membership.plan)
+        )
         .where(
             Membership.user_id == current_user.id,
             Membership.status == "active",
         )
-        .order_by(
-            Membership.end_date.desc()
-        )
+        .order_by(Membership.end_date.desc())
     )
 
     if membership is None:
         return None
 
-    now = datetime.now(timezone.utc)
-
-    # -----------------------------------------------------
-    # AUTOMATICALLY EXPIRE MEMBERSHIP
-    # -----------------------------------------------------
-
     if membership.end_date <= now:
         membership.status = "expired"
-
         db.commit()
-
         return None
 
     return membership

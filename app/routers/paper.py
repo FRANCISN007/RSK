@@ -22,10 +22,14 @@ from app.models.membership import Membership
 from app.models.paper_category import PaperCategory
 from app.models.paper import Paper
 from app.models.paper_week import PaperWeek
-from app.models.paper_week import PaperWeek
+
 from app.models.paper_page import PaperPage
 
 from app.models.week_paper import EditionPaper
+
+
+
+from app.models.edition_paper_page import EditionPaperPage
 
 from app.schemas.paper import (
     PaperCategoryCreate,
@@ -103,6 +107,93 @@ def save_uploaded_file(
         str(file_path).replace("\\", "/"),
         upload_file.content_type,
     )
+
+
+
+def save_edition_page(
+    db: Session,
+    week_paper: EditionPaper,
+    page_number: int,
+    file: UploadFile,
+    marked: bool,
+):
+    if page_number < 1 or page_number > 4:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Page number must be between 1 and 4.",
+        )
+
+    paper = db.get(Paper, week_paper.paper_id)
+
+    if paper is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Paper not found.",
+        )
+
+    category = db.get(PaperCategory, paper.category_id)
+
+    if category is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Paper category not found.",
+        )
+
+    file_path, file_type = save_uploaded_file(
+        upload_file=file,
+        category_slug=category.slug,
+        paper_slug=paper.slug,
+        page_number=page_number,
+    )
+
+    page = db.execute(
+        select(EditionPaperPage).where(
+            EditionPaperPage.edition_paper_id == week_paper.id,
+            EditionPaperPage.page_number == page_number,
+        )
+    ).scalar_one_or_none()
+
+    now = datetime.now(timezone.utc)
+
+    if page is None:
+        page = EditionPaperPage(
+            edition_paper_id=week_paper.id,
+            page_number=page_number,
+        )
+        db.add(page)
+
+    page.file_path = file_path
+    page.file_type = file_type
+    page.is_marked = marked
+    page.uploaded_at = now
+    page.marked_at = now if marked else None
+
+    try:
+        db.commit()
+        db.refresh(page)
+    except Exception:
+        db.rollback()
+        raise
+
+    return {
+        "message": (
+            "Marked page uploaded successfully."
+            if marked
+            else "Unmarked page uploaded successfully."
+        ),
+        "edition_paper_id": week_paper.id,
+        "page_id": page.id,
+        "page_number": page.page_number,
+        "file_path": page.file_path,
+        "file_type": page.file_type,
+        "is_marked": page.is_marked,
+        "uploaded_at": page.uploaded_at,
+        "marked_at": page.marked_at,
+    }
+
+
+
+
 
 
 
@@ -859,30 +950,31 @@ def remove_paper_from_week(
 # LIST PAPERS AND PAGES IN WEEK
 # ============================================================
 
-@router.get(
-    "/weeks/{week_id}/papers",
-)
+@router.get("/weeks/{week_id}/papers")
 def list_week_papers(
     week_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    week = db.scalar(
+    # Enforce current-week / historical-week access.
+    get_accessible_week(
+        db=db,
+        week_id=week_id,
+        user=current_user,
+    )
+
+    week = db.scalars(
         select(PaperWeek)
         .options(
-            joinedload(
-                PaperWeek.week_papers
-            )
-            .joinedload(
+            joinedload(PaperWeek.week_papers).joinedload(
                 EditionPaper.paper
-            )
-            .joinedload(
-                Paper.pages
+            ),
+            joinedload(PaperWeek.week_papers).joinedload(
+                EditionPaper.pages
             ),
         )
-        .where(
-            PaperWeek.id == week_id
-        )
-    )
+        .where(PaperWeek.id == week_id)
+    ).unique().first()
 
     if week is None:
         raise HTTPException(
@@ -894,16 +986,16 @@ def list_week_papers(
 
     for week_paper in sorted(
         week.week_papers,
-        key=lambda x: x.display_order,
+        key=lambda item: item.display_order,
     ):
         paper = week_paper.paper
 
-        if paper is None:
+        if paper is None or not paper.is_active:
             continue
 
         pages = sorted(
-            paper.pages,
-            key=lambda x: x.page_number,
+            week_paper.pages,
+            key=lambda page: page.page_number,
         )
 
         papers.append(
@@ -944,22 +1036,22 @@ def list_week_papers(
 # LIST PAGES FOR A PAPER IN A WEEK
 # ============================================================
 
-@router.get(
-    "/weeks/{week_id}/papers/{week_paper_id}/pages",
-    response_model=list[PaperPageResponse],
-)
+@router.get("/weeks/{week_id}/papers/{week_paper_id}/pages")
 def list_week_paper_pages(
     week_id: int,
     week_paper_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    # --------------------------------------------------------
-    # Find the paper association inside this week.
-    # --------------------------------------------------------
+    # Enforce current-week / historical-week access.
+    get_accessible_week(
+        db=db,
+        week_id=week_id,
+        user=current_user,
+    )
 
     week_paper = db.scalar(
-        select(EditionPaper)
-        .where(
+        select(EditionPaper).where(
             EditionPaper.id == week_paper_id,
             EditionPaper.edition_id == week_id,
         )
@@ -971,25 +1063,18 @@ def list_week_paper_pages(
             detail="Paper is not part of this week.",
         )
 
-    # --------------------------------------------------------
-    # Pages belong directly to the permanent Paper.
-    # They are NOT linked directly to EditionPaper.
-    # --------------------------------------------------------
-
     pages = db.scalars(
-        select(PaperPage)
+        select(EditionPaperPage)
         .where(
-            PaperPage.paper_id == week_paper.paper_id
+            EditionPaperPage.edition_paper_id == week_paper.id
         )
-        .order_by(
-            PaperPage.page_number
-        )
+        .order_by(EditionPaperPage.page_number)
     ).all()
 
     return [
         {
             "id": page.id,
-            "paper_id": page.paper_id,
+            "edition_paper_id": page.edition_paper_id,
             "page_number": page.page_number,
             "file_path": page.file_path,
             "file_type": page.file_type,
@@ -1254,193 +1339,56 @@ def delete_page(
 
 
 
-@router.post(
-    "/papers/{paper_id}/pages/{page_number}",
-    response_model=PaperPageResponse,
-)
-def upload_or_replace_page(
-    paper_id: int,
+@router.post("/week-papers/{week_paper_id}/pages/{page_number}")
+def upload_edition_page(
+    week_paper_id: int,
     page_number: int,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    if page_number < 1 or page_number > 4:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Page number must be between 1 and 4.",
-        )
+    week_paper = db.get(EditionPaper, week_paper_id)
 
-    paper = db.scalar(
-        select(Paper)
-        .options(
-            joinedload(Paper.category),
-        )
-        .where(
-            Paper.id == paper_id,
-        )
-    )
-
-    if paper is None:
+    if week_paper is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Paper not found.",
+            detail="Paper is not assigned to a week.",
         )
 
-    category = paper.category
-
-    if category is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Paper category not found.",
-        )
-
-    # --------------------------------------------------------
-    # Upload should target an existing page record.
-    # Pages must be created before files are uploaded.
-    # --------------------------------------------------------
-
-    page = db.scalar(
-        select(PaperPage).where(
-            PaperPage.paper_id == paper_id,
-            PaperPage.page_number == page_number,
-        )
-    )
-
-    if page is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=(
-                f"Page {page_number} has not been created "
-                "for this paper yet."
-            ),
-        )
-
-    # --------------------------------------------------------
-    # Save uploaded file
-    # --------------------------------------------------------
-    #
-    # This endpoint is now Paper-based, so there is no Week
-    # information available here.
-    #
-    # The existing save_uploaded_file() function therefore
-    # needs to be adjusted separately if it currently requires
-    # year/week_number.
-    #
-
-    file_path, file_type = save_uploaded_file(
-        upload_file=file,
-        category_slug=category.slug,
-        paper_slug=paper.slug,
+    return save_edition_page(
+        db=db,
+        week_paper=week_paper,
         page_number=page_number,
+        file=file,
+        marked=False,
     )
-
-    now = datetime.now(timezone.utc)
-
-    page.file_path = file_path
-    page.file_type = file_type
-    page.uploaded_at = now
-    page.is_marked = False
-    page.marked_at = None
-
-    db.commit()
-    db.refresh(page)
-
-    return {
-        "id": page.id,
-        "paper_id": page.paper_id,
-        "page_number": page.page_number,
-        "file_path": page.file_path,
-        "file_type": page.file_type,
-        "is_marked": page.is_marked,
-        "uploaded_at": page.uploaded_at,
-        "marked_at": page.marked_at,
-    }
-
-
-# ============================================================
-# UPLOAD MARKED PAGE
-# ============================================================
 
 
 @router.post(
-    "/papers/{paper_id}/pages/{page_number}/marked",
-    response_model=PaperPageResponse,
+    "/week-papers/{week_paper_id}/pages/{page_number}/marked"
 )
-def upload_marked_page(
-    paper_id: int,
+def upload_marked_edition_page(
+    week_paper_id: int,
     page_number: int,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    if page_number < 1 or page_number > 4:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Page number must be between 1 and 4.",
-        )
+    week_paper = db.get(EditionPaper, week_paper_id)
 
-    paper = db.scalar(
-        select(Paper)
-        .options(
-            joinedload(Paper.category),
-        )
-        .where(
-            Paper.id == paper_id,
-        )
-    )
-
-    if paper is None:
+    if week_paper is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Paper not found.",
+            detail="Paper is not assigned to a week.",
         )
 
-    category = paper.category
-
-    if category is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Paper category not found.",
-        )
-
-    # Marked upload must target an existing page record.
-    # Pages must be created before files are uploaded.
-    page = db.scalar(
-        select(PaperPage).where(
-            PaperPage.paper_id == paper_id,
-            PaperPage.page_number == page_number,
-        )
-    )
-
-    if page is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=(
-                f"Page {page_number} has not been created "
-                "for this paper yet."
-            ),
-        )
-
-    file_path, file_type = save_uploaded_file(
-        upload_file=file,
-        category_slug=category.slug,
-        paper_slug=paper.slug,
+    return save_edition_page(
+        db=db,
+        week_paper=week_paper,
         page_number=page_number,
+        file=file,
+        marked=True,
     )
-
-    now = datetime.now(timezone.utc)
-
-    page.file_path = file_path
-    page.file_type = file_type
-    page.uploaded_at = now
-    page.is_marked = True
-    page.marked_at = now
-
-    db.commit()
-    db.refresh(page)
-
-    return page
 
 
 # ============================================================
@@ -1466,10 +1414,7 @@ def get_current_public_papers(
                 PaperWeek.week_papers
             )
             .joinedload(
-                EditionPaper.paper
-            )
-            .joinedload(
-                Paper.pages
+                EditionPaper.pages
             ),
         )
         .where(
@@ -1512,7 +1457,7 @@ def get_current_public_papers(
             continue
 
         pages = sorted(
-            paper.pages,
+            week_paper.pages,
             key=lambda x: x.page_number,
         )
 
@@ -1575,40 +1520,16 @@ def has_active_membership(
     return membership is not None
 
 
-# ============================================================
-# HISTORICAL WEEK
-# ============================================================
-
-
-
-@router.get(
-    "/weeks/{week_id}/public",
-)
-def get_week_for_user(
+def get_accessible_week(
+    db: Session,
     week_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
+    user: User,
+) -> PaperWeek:
     week = db.scalar(
-        select(PaperWeek)
-        .options(
-            joinedload(
-                PaperWeek.week_papers
-            )
-            .joinedload(
-                EditionPaper.paper
-            )
-            .joinedload(
-                Paper.pages
-            ),
-        )
-        .where(
+        select(PaperWeek).where(
             PaperWeek.id == week_id,
             PaperWeek.status.in_(
-                [
-                    "published",
-                    "result_available",
-                ]
+                ["published", "result_available"]
             ),
         )
     )
@@ -1619,33 +1540,23 @@ def get_week_for_user(
             detail="Published paper week not found.",
         )
 
-    # Find the latest published week for this category
     current_week = db.scalar(
         select(PaperWeek)
         .where(
             PaperWeek.category_id == week.category_id,
             PaperWeek.status.in_(
-                [
-                    "published",
-                    "result_available",
-                ]
+                ["published", "result_available"]
             ),
         )
         .order_by(
             PaperWeek.year.desc(),
             PaperWeek.week_number.desc(),
         )
+        .limit(1)
     )
 
-    # Historical weeks require an active membership
-    if (
-        current_week is not None
-        and week.id != current_week.id
-    ):
-        if not has_active_membership(
-            db,
-            current_user.id,
-        ):
+    if current_week is not None and week.id != current_week.id:
+        if not has_active_membership(db, user.id):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=(
@@ -1654,23 +1565,56 @@ def get_week_for_user(
                 ),
             )
 
+    return week
+
+
+# ============================================================
+# HISTORICAL WEEK
+# ============================================================
+
+
+
+@router.get("/weeks/{week_id}/public")
+def get_week_for_user(
+    week_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # Shared access control.
+    week = get_accessible_week(
+        db=db,
+        week_id=week_id,
+        user=current_user,
+    )
+
+    # Load both paper metadata and the pages belonging to this week.
+    week = db.scalars(
+        select(PaperWeek)
+        .options(
+            joinedload(PaperWeek.week_papers).joinedload(
+                EditionPaper.paper
+            ),
+            joinedload(PaperWeek.week_papers).joinedload(
+                EditionPaper.pages
+            ),
+        )
+        .where(PaperWeek.id == week.id)
+    ).unique().first()
+
     papers = []
 
     for week_paper in sorted(
         week.week_papers,
-        key=lambda x: x.display_order,
+        key=lambda item: item.display_order,
     ):
         paper = week_paper.paper
 
-        if paper is None:
-            continue
-
-        if not paper.is_active:
+        if paper is None or not paper.is_active:
             continue
 
         pages = sorted(
-            paper.pages,
-            key=lambda x: x.page_number,
+            week_paper.pages,
+            key=lambda page: page.page_number,
         )
 
         papers.append(

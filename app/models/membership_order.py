@@ -56,4 +56,6 @@ class MembershipOrder(Base):
 
     user: Mapped["User"] = relationship()
 
-    plan: Mapped["MembershipPlan"] = relationship()
+    plan: Mapped["MembershipPlan"] = relationship(
+        back_populates="orders",
+    )

@@ -6,8 +6,8 @@ from app.models import User
 from app.routers import auth, user, membership, admin, paper, free_game
 from app.core.bootstrap import create_initial_admin
 from app.routers import pool_season
-from app.routers import pool_season, pool_week
-
+from app.routers import pool_season, pool_week, admin_pool_season_cycles
+from app.routers import discussions
 
 Base.metadata.create_all(bind=engine)
 
@@ -45,6 +45,29 @@ app.include_router(paper.router)
 app.include_router(free_game.router)
 app.include_router(pool_season.router)
 app.include_router(pool_week.router)
+app.include_router(admin_pool_season_cycles.router)
+app.include_router(discussions.router)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 @app.get("/health")

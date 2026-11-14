@@ -56,6 +56,14 @@ class MembershipPlan(Base):
         back_populates="plan",
     )
 
+    orders: Mapped[list["MembershipOrder"]] = relationship(
+        back_populates="plan",
+    )
+
+
+
+
+
 
 class Membership(Base):
     __tablename__ = "memberships"

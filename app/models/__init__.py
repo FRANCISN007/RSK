@@ -5,6 +5,15 @@ from app.models.membership import (
     MembershipPlan,
 )
 
+from app.models.discussion import (
+    DiscussionCategory,
+    DiscussionTopic,
+    DiscussionComment,
+    DiscussionLike,
+    DiscussionReport,
+    DiscussionNotification,
+)
+
 from app.models.membership_order import MembershipOrder
 
 from app.models.paper_category import PaperCategory
@@ -17,6 +26,7 @@ from app.models.pool_season import PoolSeason
 from app.models.pool_week import PoolWeek
 
 from app.models.free_game import FreeGamePost
+from app.models.pool_season_cycle import PoolSeasonCycle
 
 
 __all__ = [
@@ -33,6 +43,15 @@ __all__ = [
 
     "PoolSeason",
     "PoolWeek",
+    "PoolSeasonCycle",
 
     "FreeGamePost",
+
+
+    "DiscussionCategory",
+    "DiscussionTopic",
+    "DiscussionComment",
+    "DiscussionLike",
+    "DiscussionReport",
+    "DiscussionNotification",
 ]

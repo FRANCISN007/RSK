@@ -1,0 +1,26 @@
+SELECT
+    id,
+    cycle_id,
+    season_id,
+    year,
+    week_number,
+    closes_at
+FROM pool_weeks
+WHERE week_number = 20
+ORDER BY year, season_id;
+
+
+
+
+{
+  "title": "Best Pairs",
+  "season_id": 1,
+  "pool_week_id": 5,
+  "description": "best super pairs",
+  "game_data": {
+    "Pairs": [
+      [34, 45],
+      [3, 5]
+    ]
+  }
+}

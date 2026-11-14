@@ -27,6 +27,8 @@ from app.schemas.membership import (
     MembershipUpdate,
 )
 
+from sqlalchemy.orm import Session, joinedload
+
 
 router = APIRouter(
     prefix="/admin",
@@ -304,6 +306,9 @@ def get_all_memberships(
 ):
     memberships = db.scalars(
         select(Membership)
+        .options(
+            joinedload(Membership.plan)
+        )
         .order_by(Membership.id.desc())
     ).all()
 
@@ -429,9 +434,14 @@ def create_membership(
 
     db.add(membership)
     db.commit()
-    db.refresh(membership)
 
-    return membership
+    created_membership = db.scalar(
+        select(Membership)
+        .options(joinedload(Membership.plan))
+        .where(Membership.id == membership.id)
+    )
+
+    return created_membership
 
 
 
@@ -446,7 +456,11 @@ def update_membership(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    membership = db.get(Membership, membership_id)
+    membership = db.scalar(
+        select(Membership)
+        .options(joinedload(Membership.plan))
+        .where(Membership.id == membership_id)
+    )
 
     if membership is None:
         raise HTTPException(
@@ -455,15 +469,13 @@ def update_membership(
         )
 
     if data.plan_id is not None:
-        plan = db.get(MembershipPlan, data.plan_id)
-
-        if plan is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Membership plan not found",
-            )
-
-        membership.plan_id = data.plan_id
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Membership plan changes must be processed "
+                "through membership orders."
+            ),
+        )
 
     if data.start_date is not None:
         membership.start_date = data.start_date
@@ -471,21 +483,23 @@ def update_membership(
     if data.end_date is not None:
         membership.end_date = data.end_date
 
-    if (
-        membership.end_date <= membership.start_date
-    ):
+    if membership.end_date <= membership.start_date:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="End date must be after start date",
         )
 
     if data.status is not None:
-        if data.status not in {
+        allowed_statuses = {
             "active",
             "expired",
             "cancelled",
             "pending",
-        }:
+            "changed_plan",
+            "deactivated",
+        }
+
+        if data.status not in allowed_statuses:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid membership status",
@@ -494,14 +508,17 @@ def update_membership(
         membership.status = data.status
 
     db.commit()
-    db.refresh(membership)
 
-    return membership
+    updated_membership = db.scalar(
+        select(Membership)
+        .options(joinedload(Membership.plan))
+        .where(Membership.id == membership_id)
+    )
+
+    return updated_membership
 
 
-@router.delete(
-    "/memberships/{membership_id}",
-)
+@router.delete("/memberships/{membership_id}")
 def delete_membership(
     membership_id: int,
     admin: User = Depends(require_admin),
@@ -515,12 +532,21 @@ def delete_membership(
             detail="Membership not found",
         )
 
-    db.delete(membership)
+    if membership.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only active memberships can be cancelled here.",
+        )
+
+    membership.status = "cancelled"
+    membership.end_date = datetime.now(timezone.utc)
+
     db.commit()
 
     return {
-        "message": "Membership deleted successfully",
+        "message": "Membership cancelled successfully",
         "membership_id": membership_id,
+        "status": membership.status,
     }
 
 
@@ -585,71 +611,51 @@ def approve_membership_order(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    # -----------------------------------------------------
-    # FIND ORDER
-    # -----------------------------------------------------
-
-    order = db.get(
-        MembershipOrder,
-        order_id,
-    )
-
-    if order is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Membership order not found",
-        )
-
-    # -----------------------------------------------------
-    # ONLY PENDING ORDERS CAN BE APPROVED
-    # -----------------------------------------------------
-
-    if order.status != "pending":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"This membership order has already been "
-                f"{order.status}."
-            ),
-        )
-
     try:
-        # -------------------------------------------------
-        # MARK ORDER AS PAID
-        # -------------------------------------------------
+        order = db.scalar(
+            select(MembershipOrder)
+            .where(MembershipOrder.id == order_id)
+            .with_for_update()
+        )
+
+        if order is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Membership order not found",
+            )
+
+        if order.status != "pending":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"This membership order has already been "
+                    f"{order.status}."
+                ),
+            )
 
         order.status = "paid"
         order.paid_at = datetime.now(timezone.utc)
-
-        # -------------------------------------------------
-        # ACTIVATE MEMBERSHIP
-        # -------------------------------------------------
 
         membership = activate_membership_from_order(
             db,
             order,
         )
 
-        # -------------------------------------------------
-        # COMMIT EVERYTHING TOGETHER
-        # -------------------------------------------------
-
         db.commit()
 
-        db.refresh(order)
-        db.refresh(membership)
+        return {
+            "message": "Membership order approved successfully",
+            "order_id": order.id,
+            "membership_id": membership.id,
+            "order_status": order.status,
+            "membership_status": membership.status,
+            "start_date": membership.start_date,
+            "end_date": membership.end_date,
+        }
 
     except Exception:
         db.rollback()
         raise
-
-    return {
-        "message": "Membership order approved successfully",
-        "order_id": order.id,
-        "membership_id": membership.id,
-        "order_status": order.status,
-        "membership_status": membership.status,
-    }
 
 
 # ---------------------------------------------------------

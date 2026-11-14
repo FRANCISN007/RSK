@@ -15,6 +15,7 @@ from app.database import Base
 if TYPE_CHECKING:
     from app.models.paper import Paper
     from app.models.paper_week import PaperWeek
+    from app.models.edition_paper_page import EditionPaperPage
 
 
 class EditionPaper(Base):
@@ -66,4 +67,12 @@ class EditionPaper(Base):
     paper: Mapped["Paper"] = relationship(
         "Paper",
         back_populates="edition_papers",
+    )
+
+
+    pages: Mapped[list["EditionPaperPage"]] = relationship(
+        "EditionPaperPage",
+        back_populates="edition_paper",
+        cascade="all, delete-orphan",
+        order_by="EditionPaperPage.page_number",
     )

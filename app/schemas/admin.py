@@ -7,7 +7,7 @@ class AdminUserResponse(BaseModel):
     id: int
     full_name: str
     username: str
-    email: EmailStr
+    email: str
     phone_number: str | None
     is_active: bool
     is_verified: bool

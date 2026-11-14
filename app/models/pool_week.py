@@ -1,10 +1,10 @@
+
 from datetime import datetime
 
 from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
-    String,
     UniqueConstraint,
     func,
 )
@@ -17,11 +17,19 @@ class PoolWeek(Base):
     __tablename__ = "pool_weeks"
 
     __table_args__ = (
+        # Retain the existing constraint for legacy weeks.
         UniqueConstraint(
             "season_id",
             "year",
             "week_number",
             name="uq_pool_week_season_year_week",
+        ),
+        # A week number can appear only once in a cycle,
+        # even when the season changes from English to Aussie.
+        UniqueConstraint(
+            "cycle_id",
+            "week_number",
+            name="uq_pool_week_cycle_week",
         ),
     )
 
@@ -31,11 +39,18 @@ class PoolWeek(Base):
         index=True,
     )
 
-    season_id: Mapped[int] = mapped_column(
+    # Nullable for existing weeks created before cycles existed.
+    cycle_id: Mapped[int | None] = mapped_column(
         ForeignKey(
-            "pool_seasons.id",
-            ondelete="CASCADE",
+            "pool_season_cycles.id",
+            ondelete="RESTRICT",
         ),
+        nullable=True,
+        index=True,
+    )
+
+    season_id: Mapped[int] = mapped_column(
+        ForeignKey("pool_seasons.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -52,9 +67,7 @@ class PoolWeek(Base):
         index=True,
     )
 
-    # The actual moment this particular pool week closes.
-    # This is calculated from the season's closing rule
-    # when the week is created.
+    # The actual saved cutoff timestamp for this week.
     closes_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -72,6 +85,11 @@ class PoolWeek(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+    cycle = relationship(
+        "PoolSeasonCycle",
+        back_populates="pool_weeks",
     )
 
     season = relationship(
