@@ -855,6 +855,7 @@ def create_discussion_comment(
     )
 
     db.add(comment)
+    db.flush()
 
     create_discussion_notification(
         db=db,
@@ -931,6 +932,7 @@ def create_discussion_reply(
     )
 
     db.add(reply)
+    db.flush()
 
     create_discussion_notification(
         db=db,
